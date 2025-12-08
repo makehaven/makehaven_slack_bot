@@ -1,0 +1,13 @@
+makehaven_slack_bot.settings:
+  type: config_object
+  label: 'MakeHaven Slack Bot Settings'
+  mapping:
+    bot_name:
+      type: string
+      label: 'Bot Name'
+    signing_secret:
+      type: string
+      label: 'Slack Signing Secret'
+    agent_id:
+      type: string
+      label: 'AI Agent Machine Name'

@@ -1,0 +1,6 @@
+makehaven_slack_bot.settings:
+  title: 'MakeHaven Slack Bot'
+  description: 'Configure the MakeHaven Slack Bot.'
+  parent: system.admin_config_services
+  route_name: makehaven_slack_bot.settings
+  weight: 100

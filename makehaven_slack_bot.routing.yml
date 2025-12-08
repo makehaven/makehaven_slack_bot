@@ -1,0 +1,15 @@
+makehaven_slack_bot.events:
+  path: '/api/slack/events'
+  defaults:
+    _controller: '\Drupal\makehaven_slack_bot\Controller\SlackEventController::handleEvent'
+  methods: [POST]
+  requirements:
+    _access: 'TRUE'
+
+makehaven_slack_bot.settings:
+  path: '/admin/config/services/makehaven-slack-bot'
+  defaults:
+    _form: '\Drupal\makehaven_slack_bot\Form\SlackBotSettingsForm'
+    _title: 'MakeHaven Slack Bot Settings'
+  requirements:
+    _permission: 'administer makehaven slack bot'
