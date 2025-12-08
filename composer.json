@@ -1,0 +1,6 @@
+{
+    "name": "makehaven/makehaven_slack_bot",
+    "type": "drupal-custom-module",
+    "description": "Provides the Slack bot endpoints that connect Drupal AI Agents to Slack workspaces.",
+    "license": "GPL-2.0-or-later"
+}
