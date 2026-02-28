@@ -1,0 +1,8 @@
+services:
+  makehaven_slack_bot.tool_page_context_subscriber:
+    class: Drupal\makehaven_slack_bot\EventSubscriber\ToolPageContextSubscriber
+    arguments:
+      - '@entity_type.manager'
+      - '@request_stack'
+    tags:
+      - { name: event_subscriber }
