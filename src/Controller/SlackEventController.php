@@ -2,14 +2,16 @@
 
 namespace Drupal\makehaven_slack_bot\Controller;
 
+use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Controller\ControllerBase;
-use Symfony\Component\DependencyInjection\ContainerInterface;
-use Symfony\Component\HttpFoundation\Request;
-use Symfony\Component\HttpFoundation\Response;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
 use Drupal\ai_agents\PluginManager\AiAgentManager;
 use Drupal\ai\OperationType\Chat\ChatInput;
 use Drupal\ai\OperationType\Chat\ChatMessage;
+use GuzzleHttp\ClientInterface;
+use Symfony\Component\DependencyInjection\ContainerInterface;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 
 /**
  * Controller for handling Slack events.
@@ -31,26 +33,32 @@ class SlackEventController extends ControllerBase {
   protected $aiAgentManager;
 
   /**
-   * The Slack Service.
+   * The HTTP client.
    *
-   * @var object
+   * @var \GuzzleHttp\ClientInterface
    */
-  protected $slackService;
+  protected $httpClient;
+
+  /**
+   * The config factory.
+   *
+   * @var \Drupal\Core\Config\ConfigFactoryInterface
+   */
+  protected $configFactory;
 
   /**
    * Constructs a new SlackEventController.
-   *
-   * @param \Drupal\Core\Logger\LoggerChannelFactoryInterface $logger_factory
-   *   The logger factory.
-   * @param \Drupal\ai_agents\PluginManager\AiAgentManager $ai_agent_manager
-   *   The AI Agent manager.
-   * @param object $slack_service
-   *   The Slack service.
    */
-  public function __construct(LoggerChannelFactoryInterface $logger_factory, AiAgentManager $ai_agent_manager, $slack_service) {
+  public function __construct(
+    LoggerChannelFactoryInterface $logger_factory,
+    AiAgentManager $ai_agent_manager,
+    ClientInterface $http_client,
+    ConfigFactoryInterface $config_factory,
+  ) {
     $this->loggerFactory = $logger_factory;
     $this->aiAgentManager = $ai_agent_manager;
-    $this->slackService = $slack_service;
+    $this->httpClient = $http_client;
+    $this->configFactory = $config_factory;
   }
 
   /**
@@ -60,7 +68,8 @@ class SlackEventController extends ControllerBase {
     return new static(
       $container->get('logger.factory'),
       $container->get('plugin.manager.ai_agents'),
-      $container->get('slack.slack_service')
+      $container->get('http_client'),
+      $container->get('config.factory'),
     );
   }
 
@@ -73,37 +82,25 @@ class SlackEventController extends ControllerBase {
    * @return \Symfony\Component\HttpFoundation\Response
    *   The response object.
    */
-  public function handleEvent(Request $request) {
-    // 1. Security: Verify Signature
+  public function handleEvent(Request $request): Response {
     if (!$this->verifySignature($request)) {
       $this->loggerFactory->get('makehaven_slack_bot')->warning('Invalid Slack signature.');
       return new Response('Invalid signature', 403);
     }
 
-    // 2. Parse Payload
-    $content = $request->getContent();
-    $data = json_decode($content, TRUE);
-
+    $data = json_decode($request->getContent(), TRUE);
     if (!$data) {
       return new Response('Invalid JSON', 400);
     }
 
-    // 3. Handle URL Verification (Handshake)
+    // URL verification handshake during Slack app configuration.
     if (isset($data['type']) && $data['type'] === 'url_verification') {
       return new Response($data['challenge']);
     }
 
-    // 4. Handle Event Callback
     if (isset($data['type']) && $data['type'] === 'event_callback') {
       $event = $data['event'] ?? [];
-      
-      // We only care about app_mention (or message, depending on bot scope)
-      if (isset($event['type']) && $event['type'] === 'app_mention') {
-        // Don't reply to self (bots)
-        if (isset($event['bot_id'])) {
-          return new Response('OK');
-        }
-
+      if (isset($event['type']) && $event['type'] === 'app_mention' && !isset($event['bot_id'])) {
         $this->processAppMention($event);
       }
     }
@@ -113,18 +110,11 @@ class SlackEventController extends ControllerBase {
 
   /**
    * Verify the X-Slack-Signature header.
-   *
-   * @param \Symfony\Component\HttpFoundation\Request $request
-   *   The request object.
-   *
-   * @return bool
-   *   TRUE if valid, FALSE otherwise.
    */
-  protected function verifySignature(Request $request) {
-    $secret = $this->config('makehaven_slack_bot.settings')->get('signing_secret');
+  protected function verifySignature(Request $request): bool {
+    $secret = $this->configFactory->get('makehaven_slack_bot.settings')->get('signing_secret');
     if (!$secret) {
-      $this->loggerFactory->get('makehaven_slack_bot')->error('Slack signing secret not configured in settings.');
-      // Fail secure
+      $this->loggerFactory->get('makehaven_slack_bot')->error('Slack signing secret not configured.');
       return FALSE;
     }
 
@@ -135,67 +125,79 @@ class SlackEventController extends ControllerBase {
       return FALSE;
     }
 
-    // Prevent replay attacks (5 minutes tolerance)
-    if (abs(time() - $timestamp) > 300) {
+    // Prevent replay attacks (5-minute tolerance).
+    if (abs(time() - (int) $timestamp) > 300) {
       return FALSE;
     }
 
-    $body = $request->getContent();
-    $base_string = 'v0:' . $timestamp . ':' . $body;
-    $hash = 'v0=' . hash_hmac('sha256', $base_string, $secret);
-
+    $hash = 'v0=' . hash_hmac('sha256', 'v0:' . $timestamp . ':' . $request->getContent(), $secret);
     return hash_equals($hash, $signature);
   }
 
   /**
    * Process the app_mention event.
-   *
-   * @param array $event
-   *   The event data.
    */
-  protected function processAppMention(array $event) {
+  protected function processAppMention(array $event): void {
     $text = $event['text'] ?? '';
     $channel = $event['channel'] ?? '';
-    
+
     try {
-      // Get configured Agent ID, default to 'makehaven_orchestrator'
-      $config = $this->config('makehaven_slack_bot.settings');
+      $config = $this->configFactory->get('makehaven_slack_bot.settings');
       $agentId = $config->get('agent_id') ?: 'makehaven_orchestrator';
-      $botName = $config->get('bot_name');
-      
+
       if (!$this->aiAgentManager->hasDefinition($agentId)) {
-         $this->loggerFactory->get('makehaven_slack_bot')->error('AI Agent @id not found.', ['@id' => $agentId]);
-         $this->slackService->sendMessage('Error: I seem to have lost my brain (Agent not found).', $channel, $botName);
-         return;
+        $this->loggerFactory->get('makehaven_slack_bot')->error('AI Agent @id not found.', ['@id' => $agentId]);
+        $this->postToSlack($channel, 'Error: I seem to have lost my brain (Agent not found).');
+        return;
       }
 
       /** @var \Drupal\ai_agents\PluginInterfaces\AiAgentInterface $agent */
       $agent = $this->aiAgentManager->createInstance($agentId);
 
-      // Setup Chat Input
-      $message = new ChatMessage('user', $text);
-      $input = new ChatInput([$message]);
-      
+      $input = new ChatInput([new ChatMessage('user', $text)]);
       if (method_exists($agent, 'setChatInput')) {
         $agent->setChatInput($input);
       }
 
-      // Execute
+      $responseText = NULL;
       if (method_exists($agent, 'determineSolvability')) {
         $agent->determineSolvability();
         $responseText = $agent->answerQuestion();
-      } else {
-        $responseText = "Error: Agent execution method not found.";
       }
 
-      // Send response back to Slack
       if ($responseText) {
-        // sendMessage($message, $channel, $username = NULL, $icon_emoji = NULL, $icon_url = NULL)
-        $this->slackService->sendMessage($responseText, $channel, $botName);
+        $this->postToSlack($channel, $responseText);
       }
-
-    } catch (\Exception $e) {
+    }
+    catch (\Exception $e) {
       $this->loggerFactory->get('makehaven_slack_bot')->error('Error processing AI request: @message', ['@message' => $e->getMessage()]);
+    }
+  }
+
+  /**
+   * Posts a message to a Slack channel using the Web API.
+   */
+  protected function postToSlack(string $channel, string $text): void {
+    $token = trim((string) $this->configFactory->get('makehaven_slack_bot.settings')->get('bot_token'));
+    if ($token === '') {
+      $this->loggerFactory->get('makehaven_slack_bot')->error('Slack bot token not configured.');
+      return;
+    }
+
+    try {
+      $this->httpClient->post('https://slack.com/api/chat.postMessage', [
+        'headers' => [
+          'Authorization' => 'Bearer ' . $token,
+          'Content-Type' => 'application/json; charset=utf-8',
+        ],
+        'json' => [
+          'channel' => $channel,
+          'text' => $text,
+        ],
+      ]);
+    }
+    catch (\Exception $e) {
+      $this->loggerFactory->get('makehaven_slack_bot')->error('Failed to send Slack message: @error', ['@error' => $e->getMessage()]);
     }
   }
 

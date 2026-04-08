@@ -69,7 +69,15 @@ class SlackBotSettingsForm extends ConfigFormBase {
       '#type' => 'textfield',
       '#title' => $this->t('Slack Signing Secret'),
       '#default_value' => $config->get('signing_secret'),
-      '#description' => $this->t('The Signing Secret from your Slack App credentials. Found under "Basic Information" -> "App Credentials" -> "Signing Secret" in your Slack API settings (api.slack.com/apps).'),
+      '#description' => $this->t('Used to verify incoming events from Slack. Found under "Basic Information" → "App Credentials" → "Signing Secret" at api.slack.com/apps.'),
+      '#required' => TRUE,
+    ];
+
+    $form['bot_token'] = [
+      '#type' => 'textfield',
+      '#title' => $this->t('Slack Bot Token'),
+      '#default_value' => $config->get('bot_token'),
+      '#description' => $this->t('Bot OAuth token (starts with xoxb-) used to post replies back to Slack. Found under "OAuth & Permissions" at api.slack.com/apps. Requires the chat:write scope.'),
       '#required' => TRUE,
     ];
 
@@ -100,6 +108,7 @@ class SlackBotSettingsForm extends ConfigFormBase {
     $this->config('makehaven_slack_bot.settings')
       ->set('bot_name', $form_state->getValue('bot_name'))
       ->set('signing_secret', $form_state->getValue('signing_secret'))
+      ->set('bot_token', $form_state->getValue('bot_token'))
       ->set('agent_id', $form_state->getValue('agent_id'))
       ->save();
 

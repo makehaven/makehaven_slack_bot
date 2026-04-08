@@ -6,5 +6,4 @@ package: Makerspace
 dependencies:
   - drupal:ai
   - drupal:ai_agents
-  - slack:slack
 configure: makehaven_slack_bot.settings
