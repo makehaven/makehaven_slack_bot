@@ -1,9 +1,10 @@
 name: 'MakeHaven Slack Bot'
 type: module
-description: 'Bridge between Slack and Drupal AI Agents.'
+description: 'Red Robot: answers members'' Slack questions with the website''s Member Navigator.'
 core_version_requirement: ^10 || ^11
 package: Makerspace
 dependencies:
-  - drupal:ai
-  - drupal:ai_agents
+  - ai:ai
+  - ai:ai_assistant_api
+  - profile:profile
 configure: makehaven_slack_bot.settings

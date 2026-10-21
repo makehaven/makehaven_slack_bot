@@ -8,17 +8,22 @@ use Drupal\Core\Config\Config;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
 use Drupal\Core\Logger\LoggerChannelInterface;
+use Drupal\Core\Entity\EntityTypeManagerInterface;
+use Drupal\Core\Session\AccountSwitcherInterface;
 use Drupal\Tests\UnitTestCase;
-use Drupal\ai_agents\PluginManager\AiAgentManager;
+use Drupal\ai\AiProviderPluginManager;
 use Drupal\makehaven_slack_bot\Controller\SlackEventController;
+use Drupal\makehaven_slack_bot\Service\SlackAnswerer;
 use GuzzleHttp\ClientInterface;
+use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\RequestStack;
 
 /**
  * Unit tests for SlackEventController.
  *
- * Covers signature verification, URL verification challenge, and bot guard.
- * The AI agent path and Slack posting path are covered separately.
+ * Covers signature verification, the URL verification challenge and
+ * retries. Which events become questions is SlackAnswererTest's job.
  *
  * @group makehaven_slack_bot
  * @coversDefaultClass \Drupal\makehaven_slack_bot\Controller\SlackEventController
@@ -37,9 +42,6 @@ class SlackEventControllerTest extends UnitTestCase {
     $config = $this->createMock(Config::class);
     $config->method('get')->willReturnMap([
       ['signing_secret', $secret],
-      ['bot_token', 'xoxb-fake-token'],
-      ['agent_id', 'test_agent'],
-      ['bot_name', 'TestBot'],
     ]);
 
     $configFactory = $this->createMock(ConfigFactoryInterface::class);
@@ -49,15 +51,21 @@ class SlackEventControllerTest extends UnitTestCase {
     $loggerFactory = $this->createMock(LoggerChannelFactoryInterface::class);
     $loggerFactory->method('get')->willReturn($logger);
 
-    $agentManager = $this->createMock(AiAgentManager::class);
-    $httpClient = $this->createMock(ClientInterface::class);
-
-    return new SlackEventController(
-      $loggerFactory,
-      $agentManager,
-      $httpClient,
+    // Nothing is answered during the request: the answerer only works in
+    // destruct(), which these tests never reach.
+    $answerer = new SlackAnswerer(
       $configFactory,
+      $this->createMock(EntityTypeManagerInterface::class),
+      // Final, so it can't be mocked; these tests never call it.
+      (new \ReflectionClass(AiProviderPluginManager::class))->newInstanceWithoutConstructor(),
+      $this->createMock(EventDispatcherInterface::class),
+      new RequestStack(),
+      $this->createMock(AccountSwitcherInterface::class),
+      $this->createMock(ClientInterface::class),
+      $loggerFactory,
     );
+
+    return new SlackEventController($loggerFactory, $answerer, $configFactory);
   }
 
   /**
@@ -180,32 +188,24 @@ class SlackEventControllerTest extends UnitTestCase {
   }
 
   /**
-   * Silently ignores app_mention events from bots (prevents reply loops).
+   * Acknowledges Slack's retries without answering again.
    *
    * @covers ::handleEvent
    */
-  public function testIgnoresAppMentionFromBot(): void {
+  public function testAcknowledgesRetries(): void {
     $controller = $this->buildController();
     $body = json_encode([
       'type' => 'event_callback',
-      'event' => [
-        'type' => 'app_mention',
-        'bot_id' => 'B12345',
-        'text' => '<@U1> hello bot',
-        'channel' => 'C1',
-      ],
+      'event' => ['type' => 'app_mention', 'user' => 'U1', 'text' => '<@UBOT> hi', 'channel' => 'C1', 'ts' => '1.2'],
     ]);
 
     $request = $this->buildSignedRequest($body);
-
-    // The AI agent mock will throw if createInstance is called, ensuring
-    // the bot guard prevents any AI processing.
-    $agentManager = $this->createMock(AiAgentManager::class);
-    $agentManager->expects($this->never())->method('createInstance');
+    $request->headers->set('X-Slack-Retry-Num', '1');
 
     $response = $controller->handleEvent($request);
 
     $this->assertSame(200, $response->getStatusCode());
+    $this->assertSame('OK', $response->getContent());
   }
 
   /**

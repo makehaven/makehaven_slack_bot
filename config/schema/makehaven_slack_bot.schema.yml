@@ -2,15 +2,18 @@ makehaven_slack_bot.settings:
   type: config_object
   label: 'MakeHaven Slack Bot Settings'
   mapping:
-    bot_name:
+    enabled:
+      type: boolean
+      label: 'Answer questions in Slack'
+    allowed_slack_users:
+      type: sequence
+      label: 'Only answer these Slack user IDs (empty = everyone)'
+      sequence:
+        type: string
+        label: 'Slack user ID'
+    assistant_id:
       type: string
-      label: 'Bot Name'
+      label: 'AI assistant that answers'
     signing_secret:
       type: string
       label: 'Slack Signing Secret'
-    bot_token:
-      type: string
-      label: 'Slack Bot Token'
-    agent_id:
-      type: string
-      label: 'AI Agent Machine Name'

@@ -6,3 +6,16 @@ services:
       - '@request_stack'
     tags:
       - { name: event_subscriber }
+  makehaven_slack_bot.answerer:
+    class: Drupal\makehaven_slack_bot\Service\SlackAnswerer
+    arguments:
+      - '@config.factory'
+      - '@entity_type.manager'
+      - '@ai.provider'
+      - '@event_dispatcher'
+      - '@request_stack'
+      - '@account_switcher'
+      - '@http_client'
+      - '@logger.factory'
+    tags:
+      - { name: needs_destruction }
