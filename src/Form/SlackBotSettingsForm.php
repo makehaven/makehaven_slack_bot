@@ -8,9 +8,10 @@ use Drupal\Core\Form\FormStateInterface;
 /**
  * Configure Red Robot's Slack answers.
  *
- * The bot token is slack_member_sync's (Red is the Member Sync app). The
- * signing secret comes from the SLACK_RED_SIGNING_SECRET Pantheon secret via
- * settings.php; the field here is only a fallback.
+ * Red Robot is its own Slack app, separate from Member Sync. Its bot token
+ * and signing secret come from the SLACK_RED_BOT_TOKEN and
+ * SLACK_RED_SIGNING_SECRET Pantheon secrets via settings.php; the fields here
+ * are only fallbacks.
  */
 class SlackBotSettingsForm extends ConfigFormBase {
 
@@ -61,11 +62,18 @@ class SlackBotSettingsForm extends ConfigFormBase {
       '#description' => $this->t('The same assistant as the website chat, so both give the same answers.'),
     ];
 
+    $form['bot_token'] = [
+      '#type' => 'textfield',
+      '#title' => $this->t('Red Robot Bot User OAuth Token (fallback)'),
+      '#default_value' => $config->getOriginal('bot_token', FALSE),
+      '#description' => $this->t('Normally set by the SLACK_RED_BOT_TOKEN Pantheon secret, which overrides this field. The xoxb- token under "Install App" for the Red Robot app, not the Member Sync app.'),
+    ];
+
     $form['signing_secret'] = [
       '#type' => 'textfield',
       '#title' => $this->t('Slack Signing Secret (fallback)'),
       '#default_value' => $config->getOriginal('signing_secret', FALSE),
-      '#description' => $this->t('Normally set by the SLACK_RED_SIGNING_SECRET Pantheon secret, which overrides this field. Found under "Basic Information" → "App Credentials" at api.slack.com/apps.'),
+      '#description' => $this->t('Normally set by the SLACK_RED_SIGNING_SECRET Pantheon secret, which overrides this field. Found under "Basic Information" → "App Credentials" for the Red Robot app at api.slack.com/apps.'),
     ];
 
     return parent::buildForm($form, $form_state);
@@ -80,6 +88,7 @@ class SlackBotSettingsForm extends ConfigFormBase {
       ->set('enabled', (bool) $form_state->getValue('enabled'))
       ->set('allowed_slack_users', array_values(array_unique($users)))
       ->set('assistant_id', $form_state->getValue('assistant_id'))
+      ->set('bot_token', trim((string) $form_state->getValue('bot_token')))
       ->set('signing_secret', trim((string) $form_state->getValue('signing_secret')))
       ->save();
 

@@ -34,9 +34,9 @@ use Symfony\Component\HttpFoundation\RequestStack;
  * their uid and page "/slack", so Slack answers count in the same refusal
  * measurement as the website's.
  *
- * Replies go out as the Member Sync app's bot ("Red Robot"), using
- * slack_member_sync's token, and only from live: every other environment
- * holds live's credentials.
+ * Replies go out as the Red Robot app's own bot, kept apart from the Member
+ * Sync app so the AI never holds a token that can read emails or remove
+ * members. Live only: every other environment holds live's credentials.
  */
 final class SlackAnswerer implements DestructableInterface {
 
@@ -260,7 +260,7 @@ TXT;
     if ($text === '') {
       return;
     }
-    $token = trim((string) $this->configFactory->get('slack_member_sync.settings')->get('bot_token'));
+    $token = trim((string) $this->configFactory->get('makehaven_slack_bot.settings')->get('bot_token'));
     if ($token === '') {
       throw new \RuntimeException('No Slack bot token.');
     }
