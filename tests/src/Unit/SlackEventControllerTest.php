@@ -11,6 +11,7 @@ use Drupal\Core\Logger\LoggerChannelInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Session\AccountSwitcherInterface;
 use Drupal\Core\State\StateInterface;
+use Drupal\path_alias\AliasManagerInterface;
 use Drupal\Tests\UnitTestCase;
 use Drupal\ai\AiProviderPluginManager;
 use Drupal\makehaven_slack_bot\Controller\SlackEventController;
@@ -65,6 +66,7 @@ class SlackEventControllerTest extends UnitTestCase {
       $this->createMock(ClientInterface::class),
       $loggerFactory,
       $this->createMock(StateInterface::class),
+      $this->createMock(AliasManagerInterface::class),
     );
 
     return new SlackEventController($loggerFactory, $answerer, $configFactory);

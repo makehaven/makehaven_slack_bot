@@ -186,12 +186,27 @@ class SlackAnswererTest extends UnitTestCase {
   /**
    * The context tag is read back for the log.
    *
-   * @covers \Drupal\makehaven_slack_bot\EventSubscriber\SlackContextLogger::contextFromTags
+   * @covers \Drupal\makehaven_slack_bot\EventSubscriber\SlackContextLogger::valueFromTags
    */
   public function testContextFromTags(): void {
-    $tags = ['makehaven_slack_bot', SlackAnswerer::CONTEXT_TAG . 'thread'];
-    $this->assertSame('thread', SlackContextLogger::contextFromTags($tags));
-    $this->assertNull(SlackContextLogger::contextFromTags(['ai_assistant_api_assistant_message']));
+    $tags = ['makehaven_slack_bot', SlackAnswerer::CONTEXT_TAG . 'thread', SlackAnswerer::HANDOFF_TAG . '/node/12'];
+    $this->assertSame('thread', SlackContextLogger::valueFromTags($tags, SlackAnswerer::CONTEXT_TAG));
+    $this->assertSame('/node/12', SlackContextLogger::valueFromTags($tags, SlackAnswerer::HANDOFF_TAG));
+    $this->assertNull(SlackContextLogger::valueFromTags(['ai_assistant_api'], SlackAnswerer::CONTEXT_TAG));
+  }
+
+  /**
+   * The Navigator's hand-off line is read however it is dressed up.
+   *
+   * @covers ::handoffPath
+   */
+  public function testHandoffPath(): void {
+    $this->assertSame('/i/1234', SlackAnswerer::handoffPath('HANDOFF: /i/1234'));
+    $this->assertSame('/badges/laser-cutter', SlackAnswerer::handoffPath("**HANDOFF:** https://www.makehaven.org/badges/laser-cutter\n"));
+    $this->assertSame('/i/77', SlackAnswerer::handoffPath('HANDOFF: [Bandsaw](/i/77)'));
+    $this->assertSame('/i/77', SlackAnswerer::handoffPath('handoff: `/i/77`.'));
+    $this->assertNull(SlackAnswerer::handoffPath('See the [laser page](/i/12) to book it.'));
+    $this->assertNull(SlackAnswerer::handoffPath('HANDOFF: https://example.com/i/12'));
   }
 
 }

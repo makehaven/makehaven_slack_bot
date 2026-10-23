@@ -18,6 +18,7 @@ services:
       - '@http_client'
       - '@logger.factory'
       - '@state'
+      - '@path_alias.manager'
     tags:
       - { name: needs_destruction }
   makehaven_slack_bot.context_logger:

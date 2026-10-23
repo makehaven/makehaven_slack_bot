@@ -14,6 +14,7 @@ use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
 use Drupal\Core\Session\AccountSwitcherInterface;
 use Drupal\Core\State\StateInterface;
+use Drupal\path_alias\AliasManagerInterface;
 use Drupal\user\UserInterface;
 use GuzzleHttp\ClientInterface;
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
@@ -34,6 +35,14 @@ use Symfony\Component\HttpFoundation\RequestStack;
  * Running as the member also lets AnswerLogSubscriber log the answer with
  * their uid and page "/slack", so Slack answers count in the same refusal
  * measurement as the website's.
+ *
+ * A detailed question about one tool or badge is handed to the Tool & Badge
+ * assistant, which answers from that page's manual, safety notes and status.
+ * On the website the Navigator can only link the tool page and leave the
+ * member to ask again there; in Slack there is no page to send them to, so
+ * Red asks on their behalf. The Navigator decides (it holds the tool and
+ * badge indexes) by replying "HANDOFF: <page>", and Red runs the tool
+ * assistant as if the member were on that page.
  *
  * Red remembers a DM conversation for a couple of hours, and an @mention in
  * a thread sees that one thread. It never reads anything it was not asked
@@ -64,6 +73,29 @@ You are Red Robot, MakeHaven's helper, answering a member in Slack rather than o
 TXT;
 
   /**
+   * The assistant that answers on tool and badge pages.
+   */
+  const TOOL_ASSISTANT = 'tool_page_chat';
+
+  /**
+   * Added to the Navigator's instructions in Slack: when to hand off.
+   */
+  const HANDOFF_INSTRUCTIONS = <<<'TXT'
+### Handing a question to the tool expert
+In Slack you can pass a question to the Tool & Badge assistant, which has each tool's manual, safety notes, settings, materials and status, and each badge's training video, quiz and checkout steps. Hand off when the question is about how to use, set up, adjust, troubleshoot, clean or maintain ONE specific tool, or its safety, settings, materials or consumables, or the training, quiz or checkout for ONE specific badge, and that tool or badge is in the Tool and space index or the Badge index. To hand off, reply with exactly one line and nothing else:
+HANDOFF: <the page path from the index, e.g. /i/1234 or /badges/laser-cutter>
+Answer these yourself instead: membership, billing, policies, events, finding a page, whether a tool exists, or comparing several tools. If you cannot tell which one tool they mean, ask which.
+TXT;
+
+  /**
+   * Added to the tool assistant's instructions when Red hands it a question.
+   */
+  const TOOL_SLACK_INSTRUCTIONS = <<<'TXT'
+### Answering in Slack
+You are Red Robot, MakeHaven's helper. A member asked this in Slack and it was passed to you because it is about the tool or badge described above. They are NOT on that page: ignore any note saying they are already on it, and link the tool or badge page once so they can find the rest. Keep it short: a few sentences or a short list. A reply in a channel is seen by everyone there, so never mention this member's own badge status or account details in it unless they asked about their own badges in a DM.
+TXT;
+
+  /**
    * How far back a DM conversation is remembered, in seconds.
    */
   const DM_WINDOW = 7200;
@@ -87,6 +119,11 @@ TXT;
    * Tag prefix recording which context an answer had; see SlackContextLogger.
    */
   const CONTEXT_TAG = 'makehaven_slack_bot_context_';
+
+  /**
+   * Tag prefix naming the page a tool-assistant answer was given for.
+   */
+  const HANDOFF_TAG = 'makehaven_slack_bot_handoff_';
 
   /**
    * Red's own lines that are not answers, dropped from DM history.
@@ -121,6 +158,7 @@ TXT;
     private readonly ClientInterface $httpClient,
     private readonly LoggerChannelFactoryInterface $loggerFactory,
     private readonly StateInterface $state,
+    private readonly AliasManagerInterface $aliasManager,
   ) {}
 
   /**
@@ -215,7 +253,59 @@ TXT;
     }
 
     [$messages, $context] = $this->conversationFor($question);
-    $this->reply($question, self::toSlack($this->ask($member, $messages, $context, (string) ($settings->get('assistant_id') ?: 'member_navigator'))));
+    $navigator = (string) ($settings->get('assistant_id') ?: 'member_navigator');
+    $answer = $this->ask($member, $messages, $context, $navigator, self::PAGE, self::SLACK_INSTRUCTIONS . "\n\n" . self::HANDOFF_INSTRUCTIONS);
+
+    $handoff = self::handoffPath($answer);
+    if ($handoff !== NULL) {
+      $route = $this->toolOrBadgeRoute($handoff);
+      $answer = $route !== NULL
+        ? $this->ask($member, $messages, $context, self::TOOL_ASSISTANT, $route, self::TOOL_SLACK_INSTRUCTIONS)
+        // Not a page Red can hand to: answer without the option.
+        : $this->ask($member, $messages, $context, $navigator, self::PAGE, self::SLACK_INSTRUCTIONS);
+      if (self::handoffPath($answer) !== NULL) {
+        $answer = 'The page for that is ' . self::SITE . $handoff . ' .';
+      }
+    }
+    $this->reply($question, self::toSlack($answer));
+  }
+
+  /**
+   * The page path the Navigator handed a question to, if it did.
+   *
+   * Accepts the path bare, as a full makehaven.org URL, or inside a
+   * Markdown link, since models dress it up.
+   */
+  public static function handoffPath(string $answer): ?string {
+    if (!preg_match('/^\s*\**HANDOFF:?\**\s*(\S+)/mi', $answer, $m)) {
+      return NULL;
+    }
+    $path = $m[1];
+    if (preg_match('/\]\(([^)\s]+)\)/', $path, $link)) {
+      $path = $link[1];
+    }
+    $path = (string) preg_replace('#^https?://(www\.)?makehaven\.org#i', '', trim($path, "<>[]()`*.,"));
+    $path = (string) strtok($path, '?#');
+    return preg_match('#^/[A-Za-z0-9/_-]+$#', $path) ? $path : NULL;
+  }
+
+  /**
+   * The internal route of a tool or badge page, or NULL if it is neither.
+   *
+   * The tool assistant's context subscribers key off this path, so only a
+   * published tool (item node) or an active badge term is accepted.
+   */
+  private function toolOrBadgeRoute(string $path): ?string {
+    $internal = $this->aliasManager->getPathByAlias($path);
+    if (preg_match('#^/node/(\d+)$#', $internal, $m)) {
+      $node = $this->entityTypeManager->getStorage('node')->load((int) $m[1]);
+      return $node && $node->bundle() === 'item' && $node->isPublished() ? $internal : NULL;
+    }
+    if (preg_match('#^/taxonomy/term/(\d+)$#', $internal, $m)) {
+      $term = $this->entityTypeManager->getStorage('taxonomy_term')->load((int) $m[1]);
+      return $term && $term->bundle() === 'badges' && $term->isPublished() ? $internal : NULL;
+    }
+    return NULL;
   }
 
   /**
@@ -481,9 +571,29 @@ TXT;
   }
 
   /**
-   * Asks the assistant as the member, the way the website's chat does.
+   * Asks an assistant as the member, the way the website's chat does.
+   *
+   * @param \Drupal\user\UserInterface $member
+   *   The member who asked.
+   * @param array<int, array{role: string, text: string}> $messages
+   *   The conversation, oldest first, question last.
+   * @param string $context
+   *   Which context the messages carry, for the log.
+   * @param string $assistantId
+   *   The assistant to ask.
+   * @param string $page
+   *   The page the assistant answers "on": /slack, or a tool or badge page.
+   * @param string $slackInstructions
+   *   Instructions added after the assistant's own context.
    */
-  private function ask(UserInterface $member, array $messages, string $context, string $assistantId): string {
+  private function ask(
+    UserInterface $member,
+    array $messages,
+    string $context,
+    string $assistantId,
+    string $page,
+    string $slackInstructions,
+  ): string {
     $assistant = $this->entityTypeManager->getStorage('ai_assistant')->load($assistantId);
     if (!$assistant) {
       throw new \RuntimeException("Assistant $assistantId not found.");
@@ -503,7 +613,7 @@ TXT;
     // body the website's chat would send from page /slack.
     $body = (string) json_encode([
       'assistant_id' => $assistantId,
-      'contexts' => ['current_route' => self::PAGE],
+      'contexts' => ['current_route' => $page],
       'messages' => $messages,
     ]);
     $this->requestStack->push(Request::create(self::SITE . '/api/deepchat', 'POST', [], [], [], ['CONTENT_TYPE' => 'application/json'], $body));
@@ -511,7 +621,7 @@ TXT;
     try {
       $event = new AiAssistantSystemRoleEvent((string) ($assistant->get('instructions') ?: ''));
       $this->eventDispatcher->dispatch($event, AiAssistantSystemRoleEvent::EVENT_NAME);
-      $systemPrompt = trim($event->getSystemPrompt()) . "\n\n" . self::SLACK_INSTRUCTIONS;
+      $systemPrompt = trim($event->getSystemPrompt()) . "\n\n" . $slackInstructions;
 
       $provider = $this->aiProvider->createInstance($providerId);
       $provider->setConfiguration((array) ($assistant->get('llm_configuration') ?? []));
@@ -523,6 +633,9 @@ TXT;
         'ai_assistant_api_assistant_message_' . $assistantId,
         self::CONTEXT_TAG . $context,
       ];
+      if ($page !== self::PAGE) {
+        $tags[] = self::HANDOFF_TAG . $page;
+      }
       return trim($provider->chat($input, $modelId, $tags)->getNormalized()->getText());
     }
     finally {
