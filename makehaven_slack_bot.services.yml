@@ -17,5 +17,10 @@ services:
       - '@account_switcher'
       - '@http_client'
       - '@logger.factory'
+      - '@state'
     tags:
       - { name: needs_destruction }
+  makehaven_slack_bot.context_logger:
+    class: Drupal\makehaven_slack_bot\EventSubscriber\SlackContextLogger
+    tags:
+      - { name: event_subscriber }
