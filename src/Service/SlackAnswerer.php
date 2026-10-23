@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Drupal\makehaven_slack_bot\Service;
 
 use Drupal\ai\AiProviderPluginManager;
+use Drupal\ai\Dto\HostnameFilterDto;
 use Drupal\ai\OperationType\Chat\ChatInput;
 use Drupal\ai\OperationType\Chat\ChatMessage;
 use Drupal\ai_assistant_api\Event\AiAssistantSystemRoleEvent;
@@ -69,7 +70,7 @@ final class SlackAnswerer implements DestructableInterface {
    */
   const SLACK_INSTRUCTIONS = <<<'TXT'
 ### Answering in Slack
-You are Red Robot, MakeHaven's helper, answering a member in Slack rather than on the website. Keep answers short: a few sentences or a short list. Link to the page that answers the question, as a full https://www.makehaven.org URL. Do not tell them to look at "this page" or "the card above": they are in Slack, not on a page. If you are not sure, say so in one sentence and point them to the closest page, or suggest asking staff in Slack. Earlier messages in a DM are the same member's conversation with you, so answer follow-ups like "what's the link?" from them. When you are given a Slack thread, answer the question about that thread. A reply in a channel is seen by everyone there, so never mention this member's own account details (billing, membership status, badges) in it.
+You are Red Robot, MakeHaven's helper, answering a member in Slack rather than on the website. Keep answers short: a few sentences or a short list. Link to the page that answers the question. Write site links as paths, like [Join](/join); they are turned into full links for Slack. Do not tell them to look at "this page" or "the card above": they are in Slack, not on a page. If you are not sure, say so in one sentence and point them to the closest page, or suggest asking staff in Slack. Earlier messages in a DM are the same member's conversation with you, so answer follow-ups like "what's the link?" from them. When you are given a Slack thread, answer the question about that thread. A reply in a channel is seen by everyone there, so never mention this member's own account details (billing, membership status, badges) in it.
 TXT;
 
   /**
@@ -82,9 +83,9 @@ TXT;
    */
   const HANDOFF_INSTRUCTIONS = <<<'TXT'
 ### Handing a question to the tool expert
-In Slack you can pass a question to the Tool & Badge assistant, which has each tool's manual, safety notes, settings, materials and status, and each badge's training video, quiz and checkout steps. Hand off when the question is about how to use, set up, adjust, troubleshoot, clean or maintain ONE specific tool, or its safety, settings, materials or consumables, or the training, quiz or checkout for ONE specific badge, and that tool or badge is in the Tool and space index or the Badge index. To hand off, reply with exactly one line and nothing else:
+In Slack you can pass a question to the Tool & Badge assistant, which has each tool's manual, safety notes, settings, materials and status, and each badge's training video, quiz and checkout steps. Hand off when the question is about how to use, set up, adjust, troubleshoot, clean or maintain ONE specific tool, whether it is working or available right now, or its safety, settings, materials or consumables, or the training, quiz or checkout for ONE specific badge, and that tool or badge is in the Tool and space index or the Badge index. To hand off, reply with exactly one line and nothing else:
 HANDOFF: <the page path from the index, e.g. /i/1234 or /badges/laser-cutter>
-Answer these yourself instead: membership, billing, policies, events, finding a page, whether a tool exists, or comparing several tools. If you cannot tell which one tool they mean, ask which.
+Answer these yourself instead: membership, billing, policies, events, finding a page, whether a tool exists, or comparing several tools. When several tools fit the name (two laser cutters, several bandsaws), hand off to the one most members mean by it, the main shop machine for that job, rather than asking; the answer names the machine, so they can say if they meant another. Ask which only when the tools do different jobs and nothing in the question points to one.
 TXT;
 
   /**
@@ -94,6 +95,25 @@ TXT;
 ### Answering in Slack
 You are Red Robot, MakeHaven's helper. A member asked this in Slack and it was passed to you because it is about the tool or badge described above. They are NOT on that page: ignore any note saying they are already on it, and link the tool or badge page once so they can find the rest. Keep it short: a few sentences or a short list. A reply in a channel is seen by everyone there, so never mention this member's own badge status or account details in it unless they asked about their own badges in a DM.
 TXT;
+
+  /**
+   * Hosts whose links survive the AI module's output filter for Red.
+   *
+   * The site allows no hosts (ai.settings:allowed_hosts is empty), so the
+   * filter keeps only relative links. That suits the website, whose prompts
+   * ask for paths, but the tool context hands the model full URLs for
+   * manuals, video timestamps, issue reports and Slack channels, and in
+   * Slack those were all reduced to bare text. This list applies to Red's
+   * own requests only.
+   */
+  const LINK_HOSTS = [
+    'makehaven.org',
+    '*.makehaven.org',
+    'youtube.com',
+    '*.youtube.com',
+    'youtu.be',
+    'makehaven.slack.com',
+  ];
 
   /**
    * How far back a DM conversation is remembered, in seconds.
@@ -627,6 +647,7 @@ TXT;
       $provider->setConfiguration((array) ($assistant->get('llm_configuration') ?? []));
       $input = new ChatInput(array_map(static fn (array $m): ChatMessage => new ChatMessage($m['role'], $m['text']), $messages));
       $input->setSystemPrompt($systemPrompt);
+      $input->setHostnameFilter(new HostnameFilterDto(allowedDomainNames: self::LINK_HOSTS));
       $tags = [
         'makehaven_slack_bot',
         'ai_assistant_api_assistant_message',
