@@ -16,6 +16,7 @@ use Drupal\Core\Logger\LoggerChannelFactoryInterface;
 use Drupal\Core\Session\AccountSwitcherInterface;
 use Drupal\Core\State\StateInterface;
 use Drupal\makerspace_ai_tool_context\EventSubscriber\SiteSearchContextSubscriber;
+use Drupal\makerspace_ai_tool_context\Service\AssistantActions;
 use Drupal\node\NodeInterface;
 use Drupal\path_alias\AliasManagerInterface;
 use Drupal\user\UserInterface;
@@ -171,6 +172,11 @@ TXT;
    */
   private array $names = [];
 
+  /**
+   * Whether the question being answered was asked in a channel.
+   */
+  private bool $publicChannel = FALSE;
+
   public function __construct(
     private readonly ConfigFactoryInterface $configFactory,
     private readonly EntityTypeManagerInterface $entityTypeManager,
@@ -276,6 +282,9 @@ TXT;
     }
 
     [$messages, $context] = $this->conversationFor($question);
+    // A channel reply is read by everyone there: the context subscribers leave
+    // out the member's own next steps (NextStepsContextSubscriber).
+    $this->publicChannel = !$question['im'];
     $navigator = (string) ($settings->get('assistant_id') ?: 'member_navigator');
     $answer = $this->ask($member, $messages, $context, $navigator, self::PAGE, self::SLACK_INSTRUCTIONS . "\n\n" . self::HANDOFF_INSTRUCTIONS);
 
@@ -300,6 +309,9 @@ TXT;
       if (!self::isDeflection($toolAnswer)) {
         $answer = $toolAnswer;
       }
+    }
+    if (class_exists(AssistantActions::class)) {
+      $answer = AssistantActions::forSlack($answer);
     }
     $this->reply($question, self::toSlack($answer));
   }
@@ -699,7 +711,7 @@ TXT;
     // body the website's chat would send from page /slack.
     $body = (string) json_encode([
       'assistant_id' => $assistantId,
-      'contexts' => ['current_route' => $page],
+      'contexts' => ['current_route' => $page, 'slack_public' => $this->publicChannel],
       'messages' => $messages,
     ]);
     $this->requestStack->push(Request::create(self::SITE . '/api/deepchat', 'POST', [], [], [], ['CONTENT_TYPE' => 'application/json'], $body));
