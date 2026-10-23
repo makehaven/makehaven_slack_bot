@@ -17,6 +17,7 @@ use Drupal\Core\Session\AccountSwitcherInterface;
 use Drupal\Core\State\StateInterface;
 use Drupal\makerspace_ai_tool_context\EventSubscriber\SiteSearchContextSubscriber;
 use Drupal\makerspace_ai_tool_context\Service\AssistantActions;
+use Drupal\makerspace_ai_tool_context\Service\ToolAnswerFallback;
 use Drupal\node\NodeInterface;
 use Drupal\path_alias\AliasManagerInterface;
 use Drupal\user\UserInterface;
@@ -320,11 +321,10 @@ TXT;
    * Whether an answer is "I'm not sure" or only sends them to the tool list.
    */
   public static function isDeflection(string $answer): bool {
-    $plain = strtolower(str_replace(['’', "'"], '', $answer));
-    foreach (['not sure', 'dont know', 'do not know', 'cannot answer', 'cant answer', 'unable to answer'] as $marker) {
-      if (str_contains($plain, $marker)) {
-        return TRUE;
-      }
+    // The assistant's own refusals only: "if you're not sure which plan…"
+    // is advice, not a refusal.
+    if (preg_match('/\bI(?:[\'’]m| am) not sure\b|\bI (?:do not|don[\'’]t) know\b|\b(?:can[\'’]?t|cannot|unable to) answer\b|closest page I can point you to/iu', $answer)) {
+      return TRUE;
     }
     // Pointing at the equipment list instead of answering about a tool.
     return str_contains($answer, '/rooms/zones/equipment') && !preg_match('#\]\(/i/\d+#', $answer);
@@ -357,7 +357,8 @@ TXT;
       $query->sort('search_api_relevance', 'DESC');
       foreach ($query->execute()->getResultItems() as $item) {
         $node = $item->getOriginalObject()?->getValue();
-        if ($node instanceof NodeInterface && $node->isPublished() && $node->access('view')) {
+        $relevant = !class_exists(ToolAnswerFallback::class) || ToolAnswerFallback::titleShares($node instanceof NodeInterface ? $node->label() : '', $text);
+        if ($node instanceof NodeInterface && $node->isPublished() && $node->access('view') && $relevant) {
           return '/node/' . $node->id();
         }
       }
