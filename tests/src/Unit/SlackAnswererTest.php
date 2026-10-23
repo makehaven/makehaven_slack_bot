@@ -209,4 +209,17 @@ class SlackAnswererTest extends UnitTestCase {
     $this->assertNull(SlackAnswerer::handoffPath('HANDOFF: https://example.com/i/12'));
   }
 
+  /**
+   * "Not sure" and "open the tool list" count as not answering.
+   *
+   * @covers ::isDeflection
+   */
+  public function testIsDeflection(): void {
+    $this->assertTrue(SlackAnswerer::isDeflection("I'm not sure — the closest page I can point you to is [Tools](/rooms/zones/equipment)."));
+    $this->assertTrue(SlackAnswerer::isDeflection('I don’t know how to answer that yet.'));
+    $this->assertTrue(SlackAnswerer::isDeflection('Use [Tools](/rooms/zones/equipment) to open the laser cutter page.'));
+    $this->assertFalse(SlackAnswerer::isDeflection('Yes: the [16" Bandsaw](/i/77) is Operational.'));
+    $this->assertFalse(SlackAnswerer::isDeflection('See [Tools](/rooms/zones/equipment) or the [Shapeoko](/i/318) page.'));
+  }
+
 }

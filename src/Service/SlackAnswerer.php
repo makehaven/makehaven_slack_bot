@@ -15,6 +15,8 @@ use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
 use Drupal\Core\Session\AccountSwitcherInterface;
 use Drupal\Core\State\StateInterface;
+use Drupal\makerspace_ai_tool_context\EventSubscriber\SiteSearchContextSubscriber;
+use Drupal\node\NodeInterface;
 use Drupal\path_alias\AliasManagerInterface;
 use Drupal\user\UserInterface;
 use GuzzleHttp\ClientInterface;
@@ -85,7 +87,8 @@ TXT;
 ### Handing a question to the tool expert
 In Slack you can pass a question to the Tool & Badge assistant, which has each tool's manual, safety notes, settings, materials and status, and each badge's training video, quiz and checkout steps. Hand off when the question is about how to use, set up, adjust, troubleshoot, clean or maintain ONE specific tool, whether it is working or available right now, or its safety, settings, materials or consumables, or the training, quiz or checkout for ONE specific badge, and that tool or badge is in the Tool and space index or the Badge index. To hand off, reply with exactly one line and nothing else:
 HANDOFF: <the page path from the index, e.g. /i/1234 or /badges/laser-cutter>
-Answer these yourself instead: membership, billing, policies, events, finding a page, whether a tool exists, or comparing several tools. When several tools fit the name (two laser cutters, several bandsaws), hand off to the one most members mean by it, the main shop machine for that job, rather than asking; the answer names the machine, so they can say if they meant another. Ask which only when the tools do different jobs and nothing in the question points to one.
+Hand off to the tool's own page (/i/…) for anything about using, troubleshooting, materials or status; use a badge page (/badges/…) only when the question is about earning that badge.
+Prefer handing off to saying you are not sure: if the question is about a tool or machine, what materials or finishes are allowed on it, whether it works, or how to do something with it, and any tool in the index fits, hand off to the closest one. Answer these yourself instead: membership, billing, policies, events, finding a page, whether a tool exists, or comparing several tools. When several tools fit the name (two laser cutters, several bandsaws), hand off to the one most members mean by it, the main shop machine for that job, rather than asking; the answer names the machine, so they can say if they meant another. Ask which only when the tools do different jobs and nothing in the question points to one.
 TXT;
 
   /**
@@ -287,7 +290,70 @@ TXT;
         $answer = 'The page for that is ' . self::SITE . $handoff . ' .';
       }
     }
+    elseif (self::isDeflection($answer) && ($route = $this->toolForQuestion($question['text'])) !== NULL) {
+      // The Navigator does not always hand off when it should: replaying
+      // members' real questions (10-23), "is the 16-inch bandsaw working?" and
+      // "the laser keeps flashing red" got "I'm not sure" or "open the tool's
+      // page". Ask the tool page the site search finds for their words, and
+      // keep its answer only if it has one.
+      $toolAnswer = $this->ask($member, $messages, $context, self::TOOL_ASSISTANT, $route, self::TOOL_SLACK_INSTRUCTIONS);
+      if (!self::isDeflection($toolAnswer)) {
+        $answer = $toolAnswer;
+      }
+    }
     $this->reply($question, self::toSlack($answer));
+  }
+
+  /**
+   * Whether an answer is "I'm not sure" or only sends them to the tool list.
+   */
+  public static function isDeflection(string $answer): bool {
+    $plain = strtolower(str_replace(['’', "'"], '', $answer));
+    foreach (['not sure', 'dont know', 'do not know', 'cannot answer', 'cant answer', 'unable to answer'] as $marker) {
+      if (str_contains($plain, $marker)) {
+        return TRUE;
+      }
+    }
+    // Pointing at the equipment list instead of answering about a tool.
+    return str_contains($answer, '/rooms/zones/equipment') && !preg_match('#\]\(/i/\d+#', $answer);
+  }
+
+  /**
+   * The tool page the site search ranks first for a question, if any.
+   *
+   * Uses the same index as /search, limited to tool pages, run as the member.
+   */
+  private function toolForQuestion(string $text): ?string {
+    try {
+      $index = $this->entityTypeManager->getStorage('search_api_index')->load('site_content');
+      if (!$index || !$index->status()) {
+        return NULL;
+      }
+      $words = class_exists(SiteSearchContextSubscriber::class)
+        ? SiteSearchContextSubscriber::keywords($text)
+        : array_slice(array_filter(preg_split('/\W+/', strtolower($text)) ?: [], static fn ($w) => strlen($w) > 2), 0, 8);
+      if (!$words) {
+        return NULL;
+      }
+      $query = $index->query(['limit' => 1]);
+      $parseMode = \Drupal::service('plugin.manager.search_api.parse_mode')->createInstance('terms');
+      $parseMode->setConjunction('OR');
+      $query->setParseMode($parseMode);
+      $query->keys(implode(' ', $words));
+      $query->addCondition('type', 'item');
+      $query->addTag('search_api_skip_processor_highlight');
+      $query->sort('search_api_relevance', 'DESC');
+      foreach ($query->execute()->getResultItems() as $item) {
+        $node = $item->getOriginalObject()?->getValue();
+        if ($node instanceof NodeInterface && $node->isPublished() && $node->access('view')) {
+          return '/node/' . $node->id();
+        }
+      }
+    }
+    catch (\Throwable $e) {
+      $this->logger()->notice('Tool search for a Slack question failed: @error', ['@error' => $e->getMessage()]);
+    }
+    return NULL;
   }
 
   /**
