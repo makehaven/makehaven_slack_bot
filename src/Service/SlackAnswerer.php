@@ -251,6 +251,43 @@ TXT;
   }
 
   /**
+   * Counts one question for this Slack user today; FALSE once over the cap.
+   */
+  private function countToday(string $slackUser, int $cap): bool {
+    $key = 'makehaven_slack_bot.daily_count';
+    $today = date('Y-m-d');
+    $counts = $this->state->get($key, []);
+    if (($counts['date'] ?? '') !== $today) {
+      $counts = ['date' => $today, 'users' => []];
+    }
+    $n = (int) ($counts['users'][$slackUser] ?? 0);
+    if ($n >= $cap) {
+      return FALSE;
+    }
+    $counts['users'][$slackUser] = $n + 1;
+    $this->state->set($key, $counts);
+    return TRUE;
+  }
+
+  /**
+   * TRUE the first time today this user hits this notice.
+   */
+  private function firstTodayFor(string $slackUser, string $notice): bool {
+    $key = 'makehaven_slack_bot.notices';
+    $today = date('Y-m-d');
+    $seen = $this->state->get($key, []);
+    if (($seen['date'] ?? '') !== $today) {
+      $seen = ['date' => $today, 'users' => []];
+    }
+    if (!empty($seen['users'][$slackUser][$notice])) {
+      return FALSE;
+    }
+    $seen['users'][$slackUser][$notice] = TRUE;
+    $this->state->set($key, $seen);
+    return TRUE;
+  }
+
+  /**
    * Answers one question in Slack, or stays quiet.
    */
   private function answer(array $question): void {
@@ -258,9 +295,17 @@ TXT;
     if (!$settings->get('enabled')) {
       return;
     }
-    // While Red is being tried out, only the listed people get answers.
+    // While Red is being tried out, only the listed people get answers. With
+    // open_dms on, anyone may DM Red; channel @mentions stay on the list.
     $allowed = array_filter((array) $settings->get('allowed_slack_users'));
-    if ($allowed && !in_array($question['user'], $allowed, TRUE)) {
+    $listed = !$allowed || in_array($question['user'], $allowed, TRUE);
+    $open_dm = $question['im'] && $settings->get('open_dms');
+    if (!$listed && !$open_dm) {
+      // A DM that gets nothing back looks broken (Kate, 10-29). Say so once
+      // a day; a channel mention stays quiet.
+      if ($question['im'] && $this->firstTodayFor($question['user'], 'not_listed')) {
+        $this->reply($question, "I'm only answering a few people while I'm being tried out. For now, try Member Resources (" . self::SITE . "/member/resources) or ask in a channel.");
+      }
       return;
     }
     $env = $_ENV['PANTHEON_ENVIRONMENT'] ?? getenv('PANTHEON_ENVIRONMENT') ?: NULL;
@@ -279,6 +324,15 @@ TXT;
     }
     if ($member->hasField('field_hide_ai_chatbots') && $member->get('field_hide_ai_chatbots')->value) {
       $this->reply($question, "You've turned off AI assistants on makehaven.org, so I'll leave this one for a person to answer.");
+      return;
+    }
+
+    // A daily cap per person, so one loop can't run up the AI bill.
+    $cap = (int) ($settings->get('daily_cap') ?? 20);
+    if ($cap > 0 && !$this->countToday($question['user'], $cap)) {
+      if ($this->firstTodayFor($question['user'], 'capped')) {
+        $this->reply($question, "That's my limit for today. Ask me again tomorrow, or ask a person in a channel.");
+      }
       return;
     }
 

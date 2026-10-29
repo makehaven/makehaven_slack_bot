@@ -11,6 +11,12 @@ makehaven_slack_bot.settings:
       sequence:
         type: string
         label: 'Slack user ID'
+    open_dms:
+      type: boolean
+      label: 'Answer DMs from any linked member (mentions stay on the list)'
+    daily_cap:
+      type: integer
+      label: 'Questions per person per day (0 = no cap)'
     assistant_id:
       type: string
       label: 'AI assistant that answers'

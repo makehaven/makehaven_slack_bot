@@ -50,6 +50,21 @@ class SlackBotSettingsForm extends ConfigFormBase {
       '#rows' => 3,
     ];
 
+    $form['open_dms'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Answer DMs from any member'),
+      '#default_value' => (bool) $config->get('open_dms'),
+      '#description' => $this->t('Any member whose Slack account is linked can DM Red. @mentions in channels still answer only the people listed above.'),
+    ];
+
+    $form['daily_cap'] = [
+      '#type' => 'number',
+      '#title' => $this->t('Questions per person per day'),
+      '#min' => 0,
+      '#default_value' => (int) ($config->get('daily_cap') ?? 20),
+      '#description' => $this->t('After this many, Red says it has reached its limit for the day. 0 = no cap.'),
+    ];
+
     $assistants = [];
     foreach (\Drupal::entityTypeManager()->getStorage('ai_assistant')->loadMultiple() as $id => $assistant) {
       $assistants[$id] = $assistant->label();
@@ -87,6 +102,8 @@ class SlackBotSettingsForm extends ConfigFormBase {
     $this->config('makehaven_slack_bot.settings')
       ->set('enabled', (bool) $form_state->getValue('enabled'))
       ->set('allowed_slack_users', array_values(array_unique($users)))
+      ->set('open_dms', (bool) $form_state->getValue('open_dms'))
+      ->set('daily_cap', (int) $form_state->getValue('daily_cap'))
       ->set('assistant_id', $form_state->getValue('assistant_id'))
       ->set('bot_token', trim((string) $form_state->getValue('bot_token')))
       ->set('signing_secret', trim((string) $form_state->getValue('signing_secret')))
